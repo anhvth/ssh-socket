@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# clipsync — run on your LOCAL machine: sync tmux copies from a remote host
+# straight into the local clipboard.
+set -uo pipefail
+
+host="${1:-}"
+if [[ -z "$host" ]]; then
+  echo "usage: clipsync <ssh-host>" >&2
+  exit 2
+fi
+
+clip_in() {
+  if command -v pbcopy >/dev/null 2>&1; then pbcopy
+  elif [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1; then wl-copy
+  elif command -v xclip >/dev/null 2>&1; then xclip -in -selection clipboard
+  elif command -v xsel >/dev/null 2>&1; then xsel --clipboard --input
+  else
+    echo "clipsync: no local clipboard tool (pbcopy/wl-copy/xclip/xsel)" >&2
+    return 1
+  fi
+}
+
+# fail fast if there's no clipboard tool before opening the connection
+printf '' | clip_in || exit 1
+
+echo "clipsync: watching /tmp/tmux_copy_text_select on $host — Ctrl+C to stop"
+
+# shellcheck disable=SC2087
+ssh -o ServerAliveInterval=30 -T "$host" bash -s <<'REMOTE' |
+FILE=/tmp/tmux_copy_text_select
+b64() { base64 -w0 "$FILE" 2>/dev/null || base64 "$FILE" | tr -d '\n'; }
+sum() { cksum "$FILE" 2>/dev/null || echo missing; }
+last="$(sum)"   # skip whatever was copied before we connected
+while :; do
+  sleep 0.2
+  cur="$(sum)"
+  if [ "$cur" != "$last" ] && [ "$cur" != missing ]; then
+    last="$cur"
+    b64
+    echo
+  fi
+done
+REMOTE
+while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  printf '%s' "$line" | base64 -d 2>/dev/null | clip_in \
+    && printf 'clipsync: copied %s bytes at %s\n' \
+         "$(printf '%s' "$line" | base64 -d 2>/dev/null | wc -c | tr -d ' ')" "$(date +%T)"
+done
+
+echo "clipsync: connection to $host closed" >&2

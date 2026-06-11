@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# copy — copies standard input to the local or remote clipboard.
+# Works via local clipboard tools or OSC 52 escape sequences over SSH.
+set -euo pipefail
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+# Mirror to a temporary file so clipwatch / clipsync can pick it up
+SELECT_FILE="/tmp/tmux_copy_text_select"
+if cp "$tmp" "$SELECT_FILE" 2>/dev/null; then
+  chmod 600 "$SELECT_FILE" 2>/dev/null || true
+fi
+
+copy_osc52() {
+  command -v base64 >/dev/null 2>&1 || return 1
+
+  # Inside tmux, send to tmux's clipboard buffer (needs set-clipboard on)
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    if tmux load-buffer -w - < "$tmp" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  # Direct TTY fallback
+  local target=""
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    target="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
+  fi
+  if [[ -z "$target" && -w /dev/tty ]]; then
+    target="/dev/tty"
+  fi
+  [[ -n "$target" && -w "$target" ]] || return 1
+
+  local encoded
+  encoded="$(base64 < "$tmp" | tr -d '\r\n')"
+  printf '\033]52;c;%s\a' "$encoded" > "$target"
+}
+
+case "${OSTYPE:-}" in
+  darwin*)
+    if command -v pbcopy >/dev/null 2>&1; then
+      pbcopy < "$tmp"
+      exit 0
+    fi
+    ;;
+  cygwin*)
+    if [[ -w /dev/clipboard ]]; then
+      cat "$tmp" > /dev/clipboard
+      exit 0
+    fi
+    ;;
+esac
+
+if [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1 && wl-copy < "$tmp"; then
+  exit 0
+elif [[ -n "${DISPLAY:-}" ]] && command -v xclip >/dev/null 2>&1 && xclip -in -selection clipboard < "$tmp"; then
+  exit 0
+elif [[ -n "${DISPLAY:-}" ]] && command -v xsel >/dev/null 2>&1 && xsel --clipboard --input < "$tmp"; then
+  exit 0
+elif copy_osc52; then
+  exit 0
+else
+  printf 'copy: no clipboard target reachable; selection saved to %s\n' "$SELECT_FILE" >&2
+  exit 0
+fi

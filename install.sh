@@ -362,12 +362,23 @@ install_remote() {
       echo "# ssh-tmux-copy settings" >> "$tmux_conf"
       echo "source-file \"$INSTALL_DIR/tmux-copy.conf\"" >> "$tmux_conf"
       log_success "tmux integration appended to $tmux_conf."
-      log_info "Run 'tmux source-file $tmux_conf' inside tmux to activate changes."
     fi
   else
     log_info "Creating new $tmux_conf with copy integrations..."
     echo "source-file \"$INSTALL_DIR/tmux-copy.conf\"" > "$tmux_conf"
     log_success "Created and configured $tmux_conf."
+  fi
+
+  # Reload active tmux configuration if a tmux server is running
+  if command -v tmux >/dev/null 2>&1 && tmux info >/dev/null 2>&1; then
+    log_info "Active tmux server detected. Reloading configuration..."
+    if tmux source-file "$tmux_conf" 2>/dev/null; then
+      log_success "tmux configuration reloaded successfully."
+    else
+      log_warn "Failed to reload tmux config automatically. Try running 'tmux source-file $tmux_conf' inside a tmux session."
+    fi
+  else
+    log_info "No active tmux server running. Config will load next time tmux starts."
   fi
 }
 

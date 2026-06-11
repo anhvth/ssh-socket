@@ -12,13 +12,13 @@ A lightweight, robust utility to synchronize your remote tmux copy selections di
 
 ## Installation
 
-Run the following installation scripts. Make sure to replace `YOUR_GITHUB_USERNAME` and `YOUR_REPO_NAME` with your repository details once created on GitHub.
+Run the following installation scripts.
 
 ### 1. On your Local Machine (Client/Laptop)
 Run this command to install the SSH shell wrapper and `clipsync` daemon:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/install.sh | bash -s -- --local
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install.sh | bash -s -- --local
 ```
 
 This will:
@@ -30,7 +30,7 @@ This will:
 Run this command on each remote server to install the tmux configuration and clipboard copy wrapper:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/install.sh | bash -s -- --remote
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install.sh | bash -s -- --remote
 ```
 
 This will:

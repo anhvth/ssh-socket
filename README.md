@@ -1,81 +1,90 @@
-# ssh-tmux-copy
+# ssh-tmux-copy / ssh-bridge
 
-A lightweight, robust utility to synchronize your remote tmux copy selections directly to your local system's clipboard. It supports **OSC 52** out-of-the-box, with a background agent (`clipsync`) fallback for terminals that do not support or block OSC 52.
+This repo provides a small canonical bridge for remote SSH commands that need to perform local laptop actions.
 
-## Quick Installation
+It currently powers:
 
-### 1. On your Local Machine (Client/Laptop)
-Run this command to install the SSH shell wrapper and `clipsync` daemon:
-```bash
-curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install.sh | bash -s -- --local
+```text
+vsc .             -> opens local VS Code Remote-SSH at the remote path
+copy < stdin      -> writes remote tmux/copy output to the local clipboard
+pbcopy < stdin    -> alias for copy
 ```
 
-### 2. On the Remote Machine (Server)
-Run this command on each remote server to install the tmux configuration and clipboard copy wrapper:
-```bash
-curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install.sh | bash -s -- --remote
+The shared primitive is:
+
+```text
+SSH LocalCommand + local daemon + reverse SSH tunnel + /tmp remote state + JSON request handlers
 ```
-*Note: Reload tmux configuration with `tmux source-file ~/.tmux.conf` (or prefix + `r`) on the remote server after installing.*
 
----
+Read the full architecture and extension guide here:
 
-## Features
-- **Zero-config OSC 52:** Directly pipes tmux copy buffers to your terminal emulator's native clipboard interface.
-- **Transparent local sync (`clipsync`):** Automatically starts a background agent when you ssh to monitor copies and sync them using your laptop's native clipboard tools (`pbcopy`, `wl-copy`, `xclip`, `xsel`).
-- **Standard mouse copy:** Double-click to copy a word, triple-click to copy a line, or click-drag to select text.
-- **Vim-style selections:** Normal keybindings like `y` and `Enter` in copy mode sync to the system clipboard automatically.
+```text
+BRIDGE.md
+```
 
----
+## Remote install
+
+On a remote machine, install the small client commands with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install-vsc.sh | sh
+```
+
+This installs:
+
+```text
+~/.local/bin/ssh-bridge
+~/.local/bin/vsc
+~/.local/bin/copy
+~/.local/bin/pbcopy
+```
+
+The remote machine does not need VS Code. It needs `python3` for bridge requests.
+
+## Local SSH config
+
+The remote install only installs client commands. Your local Mac must still create the bridge when you connect.
+
+Add this to each local `~/.ssh/config` Host block that should support bridge apps:
+
+```sshconfig
+Host jump
+    PermitLocalCommand yes
+    LocalCommand /Users/anhvth/dotfiles/3rd/ssh_tmux_copy/ssh-bridge.sh local-command %n %r
+    SetEnv _SSH_BRIDGE_HOST=%n
+```
+
+Then reconnect:
+
+```bash
+ssh jump
+```
+
+After reconnecting, these should work in the remote shell:
+
+```bash
+vsc .
+printf hello | copy
+```
+
+## Tmux integration
+
+Use `copy` as the tmux copy-pipe target:
+
+```tmux
+bind -T copy-mode-vi y send -X copy-pipe-and-cancel "$HOME/dotfiles/utils/copy"
+```
+
+In this dotfiles repo, `utils/copy` is a wrapper around the canonical bridge copy app.
 
 ## Troubleshooting
-- **Copy does not work over SSH:**
-  - Check if your terminal supports OSC 52. If using iTerm2, verify that **Settings → General → Selection → "Applications in terminal may access clipboard"** is checked.
-  - If you need the `clipsync` fallback, verify that tmux is installed on your local machine and that your shell wrapper is active by running `clipsync-status`.
-- **Old config still active:** Run `tmux kill-server` on the remote host to pick up configuration changes.
-- **Select text without copying:** Hold `Shift` while dragging to bypass tmux's mouse handling and use your terminal's native selection.
 
----
+If the remote command says the bridge is missing, fix local SSH config first. `curl | sh` does not configure your local Mac.
 
-## How It Works
+Useful checks:
 
-Here is a detailed diagram showing how selections in a remote tmux session are synchronized back to your local machine:
-
-### Architecture Overview
-![Architecture Diagram](assets/architecture_diagram.png)
-
-### Data Flow Graph
-```mermaid
-flowchart TB
-    subgraph Local [Local Machine / Laptop]
-        direction TB
-        L1[ssh command] -.->|"1. Wrapper starts"| L2[clipsync Daemon]
-        L3[Terminal Emulator<br><i>iTerm2, WezTerm, Alacritty...</i>]
-        L4[Local Clipboard<br><i>pbcopy, wl-copy, xclip, xsel</i>]
-    end
-
-    subgraph Remote [Remote Server]
-        direction TB
-        R1[tmux Copy Action<br><i>Visual select / Mouse drag / Double-click</i>]
-        R2[copy script<br><i>~/.ssh-tmux-copy/bin/copy</i>]
-        R3[Clipboard Temp File<br><i>/tmp/tmux_copy_text_select</i>]
-    end
-
-    %% Step 2: tmux triggers copy script
-    R1 -->|"2. Pipes selection"| R2
-
-    %% Step 3: Copy script writes to file and emits OSC 52
-    R2 -->|"3a. Writes to"| R3
-    R2 -->|"3b. Emits OSC 52 sequence"| L3
-
-    %% Path A: OSC 52
-    L3 -->|"Method A: Intercepts escape sequence"| L4
-
-    %% Path B: clipsync fallback
-    L2 -->|"Method B: SSH polling channel"| R3
-    R3 -.->|"Streams base64 changes"| L2
-    L2 -->|"Pipes to clipboard tool"| L4
-
-    style Local fill:#f0f7ff,stroke:#0052cc,stroke-width:2px;
-    style Remote fill:#fff7e6,stroke:#d46b08,stroke-width:2px;
-    style L4 fill:#e6ffed,stroke:#28a745,stroke-width:2px,stroke-dasharray: 0;
+```bash
+ssh-bridge bridge status
+vsc . --vvv
+printf hello | copy --vvv
 ```

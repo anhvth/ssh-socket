@@ -1,37 +1,35 @@
 #!/usr/bin/env sh
 set -eu
 
-repo_raw="${VSCODE_SSH_REPO_RAW:-https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main}"
-install_dir="${VSCODE_SSH_INSTALL_DIR:-${HOME}/.local/bin}"
-install_path="${install_dir}/vsc"
-tmp="${TMPDIR:-/tmp}/vsc.$$"
+repo_raw="${SSH_BRIDGE_REPO_RAW:-https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main}"
+install_dir="${SSH_BRIDGE_INSTALL_DIR:-${VSCODE_SSH_INSTALL_DIR:-${HOME}/.local/bin}}"
+tmp="${TMPDIR:-/tmp}/ssh-bridge.$$"
 
 mkdir -p "$install_dir"
-
-cleanup() {
-    rm -f "$tmp"
-}
+cleanup() { rm -f "$tmp"; }
 trap cleanup EXIT INT TERM
 
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${repo_raw}/vscode-ssh.sh" -o "$tmp"
+    curl -fsSL "${repo_raw}/ssh-bridge.sh" -o "$tmp"
 elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "${repo_raw}/vscode-ssh.sh"
+    wget -qO "$tmp" "${repo_raw}/ssh-bridge.sh"
 else
     echo "install-vsc: curl or wget is required" >&2
     exit 1
 fi
 
 chmod +x "$tmp"
-mv "$tmp" "$install_path"
+for name in ssh-bridge vsc copy pbcopy; do
+    cp "$tmp" "${install_dir}/${name}"
+    chmod +x "${install_dir}/${name}"
+done
 trap - EXIT INT TERM
+rm -f "$tmp"
 
-echo "install-vsc: installed ${install_path}"
-
+echo "install-vsc: installed ssh-bridge, vsc, copy, pbcopy into ${install_dir}"
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "install-vsc: warning: python3 is required when running vsc on a remote machine" >&2
+    echo "install-vsc: warning: python3 is required when running remote bridge clients" >&2
 fi
-
 case ":${PATH:-}:" in
     *":${install_dir}:"*) ;;
     *)

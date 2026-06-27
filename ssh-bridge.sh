@@ -711,84 +711,126 @@ PY
     send_json "$payload" "$request_type" 1 >/dev/null
 }
 
-health_ok() {
-    printf 'OK   %s\n' "$*"
+health_header() {
+    printf '\n%s\n' "$1"
+    printf '%s\n' "------------------------------"
+}
+
+health_line() {
+    local status="$1" name="$2" detail="${3:-}"
+    case "$status" in
+        pass) printf '  [PASS] %-22s %s\n' "$name" "$detail" ;;
+        warn) printf '  [WARN] %-22s %s\n' "$name" "$detail"; HEALTH_WARNS=$((HEALTH_WARNS + 1)) ;;
+        fail) printf '  [FAIL] %-22s %s\n' "$name" "$detail"; HEALTH_FAILS=$((HEALTH_FAILS + 1)) ;;
+    esac
+}
+
+health_pass() {
+    health_line pass "$1" "${2:-}"
 }
 
 health_warn() {
-    printf 'WARN %s\n' "$*"
+    health_line warn "$1" "${2:-}"
 }
 
 health_fail() {
-    printf 'FAIL %s\n' "$*"
-    HEALTH_FAILS=$((HEALTH_FAILS + 1))
+    health_line fail "$1" "${2:-}"
+}
+
+health_verdict() {
+    local label="$1"
+    printf '\nSummary\n'
+    printf '%s\n' "------------------------------"
+    if (( HEALTH_FAILS == 0 )); then
+        if (( HEALTH_WARNS == 0 )); then
+            printf '  RESULT: GREEN - %s is ready\n' "$label"
+        else
+            printf '  RESULT: GREEN - %s is ready (%d warning(s))\n' "$label" "$HEALTH_WARNS"
+        fi
+        return 0
+    fi
+    printf '  RESULT: RED - %s has %d blocking issue(s), %d warning(s)\n' "$label" "$HEALTH_FAILS" "$HEALTH_WARNS"
+    return 1
 }
 
 health_have_cmd() {
-    local name="$1"
-    if command -v "$name" >/dev/null 2>&1; then
-        health_ok "$name: $(command -v "$name")"
+    local name="$1" path
+    if path="$(command -v "$name" 2>/dev/null)"; then
+        health_pass "$name" "$path"
     else
-        health_fail "$name: not found"
+        health_fail "$name" "not found in PATH"
     fi
 }
 
 health_have_file() {
     local path="$1"
     if [[ -x "$path" ]]; then
-        health_ok "$path executable"
+        health_pass "$(basename "$path")" "$path"
     else
-        health_fail "$path missing or not executable"
+        health_fail "$(basename "$path")" "missing or not executable: $path"
     fi
 }
 
 health_old_absent() {
     local path="$1"
     if [[ -e "$path" ]]; then
-        health_fail "legacy still present: $path"
+        health_fail "$(basename "$path")" "legacy binary still exists: $path"
     else
-        health_ok "legacy absent: $path"
+        health_pass "$(basename "$path")" "absent"
     fi
 }
 
 health_remote_cmd() {
     HEALTH_FAILS=0
+    HEALTH_WARNS=0
     local install_dir="${HOME}/.local/bin" state_dir tcp ssh_host response
-    printf 'ss-health remote host=%s user=%s\n' "$(remote_hostname)" "${USER:-unknown}"
+    printf 'ss-health remote\n'
+    printf 'host=%s user=%s install_dir=%s\n' "$(remote_hostname)" "${USER:-unknown}" "$install_dir"
+
+    health_header "Runtime"
     health_have_cmd python3
+
+    health_header "Installed clients"
     for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
         health_have_file "$install_dir/$name"
     done
+
+    health_header "Legacy cleanup"
     for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-local-command; do
         health_old_absent "$install_dir/$old_name"
     done
+
+    health_header "Bridge state"
     state_dir="$(remote_state_dir)"
-    if [[ -d "$state_dir" ]]; then health_ok "state dir: $state_dir"; else health_fail "state dir missing: $state_dir"; fi
+    if [[ -d "$state_dir" ]]; then health_pass "state dir" "$state_dir"; else health_fail "state dir" "missing: $state_dir"; fi
     tcp="$(read_first_existing "$state_dir/tcp" || true)"
     ssh_host="$(read_first_existing "$state_dir/ssh_host" "$state_dir/ssh_to_me" || true)"
-    if [[ -n "$tcp" ]]; then health_ok "tcp target: $tcp"; else health_fail "tcp target missing"; fi
-    if [[ -n "$ssh_host" ]]; then health_ok "ssh host: $ssh_host"; else health_fail "ssh host missing"; fi
+    if [[ -n "$tcp" ]]; then health_pass "tcp target" "$tcp"; else health_fail "tcp target" "missing"; fi
+    if [[ -n "$ssh_host" ]]; then health_pass "ssh host" "$ssh_host"; else health_fail "ssh host" "missing"; fi
+
+    health_header "Connectivity"
     if response="$(send_json '{"type":"ping"}' "health.ping" 0 2>/tmp/ss-health-ping.err)"; then
-        health_ok "bridge ping: $response"
+        health_pass "bridge ping" "$response"
     else
-        health_fail "bridge ping failed: $(cat /tmp/ss-health-ping.err 2>/dev/null || true)"
+        health_fail "bridge ping" "$(cat /tmp/ss-health-ping.err 2>/dev/null || true)"
     fi
-    if (( HEALTH_FAILS == 0 )); then
-        printf 'GREEN ss-health remote passed\n'
-        return 0
-    fi
-    printf 'RED ss-health remote failed (%d issue(s))\n' "$HEALTH_FAILS"
-    return 1
+    health_verdict "remote bridge"
 }
 
 health_local_cmd() {
     local host="${1:-}" code_cmd opener clipboard_writer dotfiles_bin="$HOME/dotfiles/mybins"
     HEALTH_FAILS=0
-    printf 'ss-health local host=%s user=%s\n' "$(hostname 2>/dev/null || printf unknown)" "${USER:-unknown}"
+    HEALTH_WARNS=0
+    printf 'ss-health local\n'
+    printf 'host=%s user=%s socket=%s\n' "$(hostname 2>/dev/null || printf unknown)" "${USER:-unknown}" "$LOCAL_SOCKET"
+
+    health_header "Runtime"
     health_have_cmd python3
     health_have_cmd ssh
     health_have_cmd rsync
-    if code_cmd="$(choose_code_cmd 2>/dev/null)"; then health_ok "code command: $code_cmd"; else health_fail "code command not found"; fi
+
+    health_header "Local app integrations"
+    if code_cmd="$(choose_code_cmd 2>/dev/null)"; then health_pass "VS Code CLI" "$code_cmd"; else health_fail "VS Code CLI" "code or code-insiders not found"; fi
     if [[ -x /usr/bin/open ]]; then
         opener="/usr/bin/open"
     elif command -v xdg-open >/dev/null 2>&1; then
@@ -796,7 +838,7 @@ health_local_cmd() {
     else
         opener=""
     fi
-    if [[ -n "$opener" ]]; then health_ok "opener: $opener"; else health_fail "opener not found"; fi
+    if [[ -n "$opener" ]]; then health_pass "file opener" "$opener"; else health_fail "file opener" "open or xdg-open not found"; fi
     if command -v pbcopy >/dev/null 2>&1; then
         clipboard_writer="$(command -v pbcopy)"
     elif [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1; then
@@ -808,7 +850,9 @@ health_local_cmd() {
     else
         clipboard_writer=""
     fi
-    if [[ -n "$clipboard_writer" ]]; then health_ok "clipboard writer: $clipboard_writer"; else health_fail "clipboard writer not found"; fi
+    if [[ -n "$clipboard_writer" ]]; then health_pass "clipboard writer" "$clipboard_writer"; else health_fail "clipboard writer" "pbcopy/wl-copy/xclip/xsel not found"; fi
+
+    health_header "Local clients"
     for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
         if [[ -d "$dotfiles_bin" ]]; then
             health_have_file "$dotfiles_bin/$name"
@@ -816,13 +860,17 @@ health_local_cmd() {
             health_have_cmd "$name"
         fi
     done
+
+    health_header "Local daemon"
     if bridge_cmd start --quiet >/dev/null 2>&1 && bridge_cmd status >/dev/null 2>&1; then
-        health_ok "local daemon: running at $LOCAL_SOCKET"
+        health_pass "daemon" "running at $LOCAL_SOCKET"
     else
-        health_fail "local daemon failed; see $LOCAL_LOG"
+        health_fail "daemon" "failed to start; see $LOCAL_LOG"
     fi
+
     if [[ -n "$host" ]]; then
-        printf 'ss-health checking remote %s\n' "$host"
+        health_header "Remote host: $host"
+        health_pass "bootstrap" "install/update requested via LocalCommand path"
         local_command_cmd "$host" || true
         if ssh \
             -o PermitLocalCommand=no \
@@ -833,17 +881,12 @@ health_local_cmd() {
             -o BatchMode=yes \
             "$host" \
             '$HOME/.local/bin/ss-health --remote'; then
-            health_ok "remote health: $host"
+            health_pass "remote health" "$host"
         else
-            health_fail "remote health failed: $host"
+            health_fail "remote health" "$host failed; run ssh $host and retry"
         fi
     fi
-    if (( HEALTH_FAILS == 0 )); then
-        printf 'GREEN ss-health passed\n'
-        return 0
-    fi
-    printf 'RED ss-health failed (%d issue(s))\n' "$HEALTH_FAILS"
-    return 1
+    health_verdict "local bridge"
 }
 
 health_cmd() {

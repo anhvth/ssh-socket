@@ -19,6 +19,7 @@ Usage:
   ss-bridge open [path] [--vvv]
   ss-bridge copy [--vvv]
   ss-bridge health [ssh-config-host]
+  ss-bridge setup <ssh-config-host>
 
 Clients:
   ss-code [path] [--vvv]
@@ -27,6 +28,7 @@ Clients:
   ss-copy < stdin
   ss-pbcopy < stdin
   ss-health [ssh-config-host]
+  ss-setup <ssh-config-host>
 
 Remote runtime state lives in /tmp/ssh-bridge/$USER/$HOSTNAME.
 Local runtime state lives in ~/.cache/ssh-bridge.
@@ -39,6 +41,7 @@ case "$prog" in
     ss-open|ss-open-remote) cmd="open" ;;
     ss-copy|ss-pbcopy) cmd="copy" ;;
     ss-health) cmd="health" ;;
+    ss-setup) cmd="setup" ;;
     ss-bridge) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
     *) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
 esac
@@ -659,11 +662,16 @@ copy_cmd() {
     tmp="$(mktemp)"
     trap 'rm -f "$tmp"' RETURN
     cat > "$tmp"
-    select_file="/tmp/tmux_copy_text_select"
+    if is_remote_shell; then
+        load_remote_context
+        select_file="$REMOTE_STATE_DIR/tmux_copy_text_select"
+    else
+        select_file="${SSH_BRIDGE_LOCAL_SELECTION_FILE:-${LOCAL_BASE_DIR}/tmux_copy_text_select}"
+    fi
+    mkdir -p "$(dirname "$select_file")" 2>/dev/null || true
     if cp "$tmp" "$select_file" 2>/dev/null; then chmod 600 "$select_file" 2>/dev/null || true; fi
 
     if is_remote_shell; then
-        load_remote_context
         text_json="$(json_escape_stdin < "$tmp")"
         payload="$(
             SSH_BRIDGE_TEXT_JSON="$text_json" \
@@ -712,16 +720,40 @@ PY
 }
 
 health_header() {
-    printf '\n%s\n' "$1"
+    printf '\n%s%s%s\n' "$HEALTH_BOLD" "$1" "$HEALTH_RESET"
     printf '%s\n' "------------------------------"
+}
+
+health_init_color() {
+    HEALTH_RESET=""
+    HEALTH_BOLD=""
+    HEALTH_GREEN=""
+    HEALTH_YELLOW=""
+    HEALTH_RED=""
+    HEALTH_DIM=""
+    if [[ "${SS_HEALTH_COLOR:-auto}" == "never" ]]; then
+        return 0
+    fi
+    if [[ "${SS_HEALTH_COLOR:-auto}" == "auto" && -n "${NO_COLOR:-}" ]]; then
+        return 0
+    fi
+    if [[ "${SS_HEALTH_COLOR:-auto}" != "always" && ! -t 1 ]]; then
+        return 0
+    fi
+    HEALTH_RESET="$(printf '\033[0m')"
+    HEALTH_BOLD="$(printf '\033[1m')"
+    HEALTH_GREEN="$(printf '\033[32m')"
+    HEALTH_YELLOW="$(printf '\033[33m')"
+    HEALTH_RED="$(printf '\033[31m')"
+    HEALTH_DIM="$(printf '\033[2m')"
 }
 
 health_line() {
     local status="$1" name="$2" detail="${3:-}"
     case "$status" in
-        pass) printf '  [PASS] %-22s %s\n' "$name" "$detail" ;;
-        warn) printf '  [WARN] %-22s %s\n' "$name" "$detail"; HEALTH_WARNS=$((HEALTH_WARNS + 1)) ;;
-        fail) printf '  [FAIL] %-22s %s\n' "$name" "$detail"; HEALTH_FAILS=$((HEALTH_FAILS + 1)) ;;
+        pass) printf '  %s[PASS]%s %-22s %s%s%s\n' "$HEALTH_GREEN" "$HEALTH_RESET" "$name" "$HEALTH_DIM" "$detail" "$HEALTH_RESET" ;;
+        warn) printf '  %s[WARN]%s %-22s %s%s%s\n' "$HEALTH_YELLOW" "$HEALTH_RESET" "$name" "$HEALTH_DIM" "$detail" "$HEALTH_RESET"; HEALTH_WARNS=$((HEALTH_WARNS + 1)) ;;
+        fail) printf '  %s[FAIL]%s %-22s %s%s%s\n' "$HEALTH_RED" "$HEALTH_RESET" "$name" "$HEALTH_DIM" "$detail" "$HEALTH_RESET"; HEALTH_FAILS=$((HEALTH_FAILS + 1)) ;;
     esac
 }
 
@@ -739,17 +771,17 @@ health_fail() {
 
 health_verdict() {
     local label="$1"
-    printf '\nSummary\n'
+    printf '\n%sSummary%s\n' "$HEALTH_BOLD" "$HEALTH_RESET"
     printf '%s\n' "------------------------------"
     if (( HEALTH_FAILS == 0 )); then
         if (( HEALTH_WARNS == 0 )); then
-            printf '  RESULT: GREEN - %s is ready\n' "$label"
+            printf '  RESULT: %sGREEN%s - %s is ready\n' "$HEALTH_GREEN" "$HEALTH_RESET" "$label"
         else
-            printf '  RESULT: GREEN - %s is ready (%d warning(s))\n' "$label" "$HEALTH_WARNS"
+            printf '  RESULT: %sGREEN%s - %s is ready (%d warning(s))\n' "$HEALTH_GREEN" "$HEALTH_RESET" "$label" "$HEALTH_WARNS"
         fi
         return 0
     fi
-    printf '  RESULT: RED - %s has %d blocking issue(s), %d warning(s)\n' "$label" "$HEALTH_FAILS" "$HEALTH_WARNS"
+    printf '  RESULT: %sRED%s - %s has %d blocking issue(s), %d warning(s)\n' "$HEALTH_RED" "$HEALTH_RESET" "$label" "$HEALTH_FAILS" "$HEALTH_WARNS"
     return 1
 }
 
@@ -774,30 +806,34 @@ health_have_file() {
 health_old_absent() {
     local path="$1"
     if [[ -e "$path" ]]; then
-        health_fail "$(basename "$path")" "legacy binary still exists: $path"
+        health_fail "legacy $(basename "$path")" "still exists: $path"
     else
-        health_pass "$(basename "$path")" "absent"
+        health_pass "legacy $(basename "$path")" "absent: $path"
     fi
 }
 
 health_remote_cmd() {
     HEALTH_FAILS=0
     HEALTH_WARNS=0
-    local install_dir="${HOME}/.local/bin" state_dir tcp ssh_host response
-    printf 'ss-health remote\n'
-    printf 'host=%s user=%s install_dir=%s\n' "$(remote_hostname)" "${USER:-unknown}" "$install_dir"
+    health_init_color
+    local install_dir="${HOME}/.local/bin" state_dir tcp ssh_host response ping_err
+    printf '%sss-health remote%s\n' "$HEALTH_BOLD" "$HEALTH_RESET"
+    printf '%shost=%s user=%s install_dir=%s%s\n' "$HEALTH_DIM" "$(remote_hostname)" "${USER:-unknown}" "$install_dir" "$HEALTH_RESET"
 
     health_header "Runtime"
     health_have_cmd python3
 
     health_header "Installed clients"
-    for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
+    for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health ss-setup; do
         health_have_file "$install_dir/$name"
     done
 
     health_header "Legacy cleanup"
     for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-local-command; do
         health_old_absent "$install_dir/$old_name"
+        if [[ -d "$HOME/dotfiles/mybins" ]]; then
+            health_old_absent "$HOME/dotfiles/mybins/$old_name"
+        fi
     done
 
     health_header "Bridge state"
@@ -809,10 +845,54 @@ health_remote_cmd() {
     if [[ -n "$ssh_host" ]]; then health_pass "ssh host" "$ssh_host"; else health_fail "ssh host" "missing"; fi
 
     health_header "Connectivity"
-    if response="$(send_json '{"type":"ping"}' "health.ping" 0 2>/tmp/ss-health-ping.err)"; then
+    ping_err="${state_dir}/ss-health-ping.err"
+    if response="$(send_json '{"type":"ping"}' "health.ping" 0 2>"$ping_err")"; then
         health_pass "bridge ping" "$response"
     else
-        health_fail "bridge ping" "$(cat /tmp/ss-health-ping.err 2>/dev/null || true)"
+        health_fail "bridge ping" "$(cat "$ping_err" 2>/dev/null || true)"
+    fi
+
+    health_header "Tmux copy path"
+    if command -v tmux >/dev/null 2>&1; then
+        local tmux_keys stale_keys copy_test select_file
+        tmux_keys="$(tmux list-keys -T copy-mode-vi 2>/dev/null | grep -E 'copy-pipe.*(y|Enter|MouseDragEnd1Pane)|DoubleClick1Pane|TripleClick1Pane' || true)"
+        stale_keys="$(printf '%s\n' "$tmux_keys" | grep -E 'dotfiles/(utils|mybins)|ssh-tmux-copy|/tmp/tmux_copy_text_select' || true)"
+        if printf '%s\n' "$tmux_keys" | grep -q "$install_dir/ss-copy"; then
+            health_pass "tmux binding" "$install_dir/ss-copy"
+        else
+            health_fail "tmux binding" "copy-mode keys do not use $install_dir/ss-copy"
+        fi
+        if [[ -z "$stale_keys" ]]; then
+            health_pass "stale tmux binding" "none"
+        else
+            health_fail "stale tmux binding" "$(printf '%s' "$stale_keys" | tr '\n' ';' | cut -c1-220)"
+        fi
+        select_file="$state_dir/tmux_copy_text_select"
+        copy_test="ss-health-copy-$(date +%s)-$$"
+        if printf '%s' "$copy_test" | "$install_dir/ss-copy" >/dev/null 2>"$state_dir/ss-copy-test.err" &&
+            [[ -s "$select_file" ]] &&
+            grep -q "$copy_test" "$select_file"; then
+            health_pass "ss-copy write" "$select_file"
+        else
+            health_fail "ss-copy write" "$(cat "$state_dir/ss-copy-test.err" 2>/dev/null || printf 'selection file not updated: %s' "$select_file")"
+        fi
+    else
+        health_warn "tmux" "not installed; skipping tmux binding check"
+    fi
+
+    health_header "PATH hygiene"
+    local resolved_vsc resolved_copy
+    resolved_vsc="$(command -v vsc 2>/dev/null || true)"
+    resolved_copy="$(command -v copy 2>/dev/null || true)"
+    if [[ -z "$resolved_vsc" ]]; then
+        health_pass "vsc command" "not present"
+    else
+        health_fail "vsc command" "legacy command still resolves to $resolved_vsc"
+    fi
+    if [[ -z "$resolved_copy" ]]; then
+        health_pass "copy command" "not present"
+    else
+        health_fail "copy command" "legacy command still resolves to $resolved_copy"
     fi
     health_verdict "remote bridge"
 }
@@ -821,8 +901,9 @@ health_local_cmd() {
     local host="${1:-}" code_cmd opener clipboard_writer dotfiles_bin="$HOME/dotfiles/mybins"
     HEALTH_FAILS=0
     HEALTH_WARNS=0
-    printf 'ss-health local\n'
-    printf 'host=%s user=%s socket=%s\n' "$(hostname 2>/dev/null || printf unknown)" "${USER:-unknown}" "$LOCAL_SOCKET"
+    health_init_color
+    printf '%sss-health local%s\n' "$HEALTH_BOLD" "$HEALTH_RESET"
+    printf '%shost=%s user=%s socket=%s%s\n' "$HEALTH_DIM" "$(hostname 2>/dev/null || printf unknown)" "${USER:-unknown}" "$LOCAL_SOCKET" "$HEALTH_RESET"
 
     health_header "Runtime"
     health_have_cmd python3
@@ -853,7 +934,7 @@ health_local_cmd() {
     if [[ -n "$clipboard_writer" ]]; then health_pass "clipboard writer" "$clipboard_writer"; else health_fail "clipboard writer" "pbcopy/wl-copy/xclip/xsel not found"; fi
 
     health_header "Local clients"
-    for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
+    for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health ss-setup; do
         if [[ -d "$dotfiles_bin" ]]; then
             health_have_file "$dotfiles_bin/$name"
         else
@@ -869,6 +950,8 @@ health_local_cmd() {
     fi
 
     if [[ -n "$host" ]]; then
+        local remote_color="never"
+        [[ -n "$HEALTH_GREEN" ]] && remote_color="always"
         health_header "Remote host: $host"
         health_pass "bootstrap" "install/update requested via LocalCommand path"
         local_command_cmd "$host" || true
@@ -880,7 +963,7 @@ health_local_cmd() {
             -o ControlPath=none \
             -o BatchMode=yes \
             "$host" \
-            '$HOME/.local/bin/ss-health --remote'; then
+            "SS_HEALTH_COLOR=$remote_color \$HOME/.local/bin/ss-health --remote"; then
             health_pass "remote health" "$host"
         else
             health_fail "remote health" "$host failed; run ssh $host and retry"
@@ -909,6 +992,21 @@ health_cmd() {
     esac
 }
 
+setup_cmd() {
+    local host="${1:-}"
+    if [[ -z "$host" || "$host" == "-h" || "$host" == "--help" ]]; then
+        echo 'Usage: ss-setup <ssh-config-host>'
+        echo 'Starts local daemon, installs/updates remote ss-* clients, creates tunnel state, then runs ss-health.'
+        return 2
+    fi
+    if is_remote_shell; then
+        echo "ss-setup: run this on your local Mac, not inside the remote SSH session." >&2
+        return 2
+    fi
+    local_command_cmd "$host"
+    health_local_cmd "$host"
+}
+
 install_remote_script() {
     local ssh_target="$1" ssh_host="$2"
     {
@@ -917,6 +1015,7 @@ set -eu
 ssh_host="$1"
 remote_tcp_port="$2"
 install_dir="$HOME/.local/bin"
+dotfiles_bin="$HOME/dotfiles/mybins"
 remote_host="$(hostname 2>/dev/null || printf unknown)"
 state_root="/tmp/ssh-bridge/${USER:-user}/${remote_host}"
 mkdir -p "$install_dir" "$state_root"
@@ -932,14 +1031,28 @@ SSH_BRIDGE_CLIENT_B64
 chmod +x "$tmp"
 for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-local-command; do
     rm -f "$install_dir/$old_name"
+    if [ -d "$dotfiles_bin" ]; then
+        rm -f "$dotfiles_bin/$old_name"
+    fi
 done
 cp "$tmp" "$install_dir/ss-bridge"
-for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
+for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health ss-setup; do
     cp "$tmp" "$install_dir/$name"
     chmod +x "$install_dir/$name"
 done
 chmod +x "$install_dir/ss-bridge"
 rm -f "$tmp"
+if command -v tmux >/dev/null 2>&1; then
+    copy_cmd="$install_dir/ss-copy"
+    tmux bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -n DoubleClick1Pane select-pane \; copy-mode -M \; send-keys -X select-word \; send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -n TripleClick1Pane select-pane \; copy-mode -M \; send-keys -X select-line \; send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -T copy-mode-vi DoubleClick1Pane select-pane \; send-keys -X select-word \; send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+    tmux bind-key -T copy-mode-vi TripleClick1Pane select-pane \; send-keys -X select-line \; send-keys -X copy-pipe-and-cancel "$copy_cmd" 2>/dev/null || true
+fi
 if ! command -v python3 >/dev/null 2>&1; then
     echo "ssh-bridge: installed clients, but python3 is required for remote requests" >&2
 fi
@@ -1026,6 +1139,7 @@ case "$cmd" in
     open) open_cmd "$@" ;;
     copy) copy_cmd "$@" ;;
     health) health_cmd "$@" ;;
+    setup) setup_cmd "$@" ;;
     help|-h|--help) usage ;;
     *) echo "ssh-bridge: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
 esac

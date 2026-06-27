@@ -9,6 +9,7 @@ ss-code .             -> opens local VS Code Remote-SSH at the remote path
 ss-copy < stdin      -> writes remote tmux/copy output to the local clipboard
 ss-pbcopy < stdin    -> alias for ss-copy
 ss-health [host]     -> verifies local and optional remote bridge health
+ss-setup <host>      -> installs/updates remote clients and verifies health
 ```
 
 The shared primitive is:
@@ -74,13 +75,13 @@ ss-health
 
 ## Tmux integration
 
-Use `copy` as the tmux copy-pipe target:
+Use `ss-copy` as the tmux copy-pipe target:
 
 ```tmux
-bind -T copy-mode-vi y send -X copy-pipe-and-cancel "$HOME/dotfiles/utils/copy"
+bind -T copy-mode-vi y send -X copy-pipe-and-cancel "$HOME/.local/bin/ss-copy"
 ```
 
-In this dotfiles repo, `utils/copy` delegates to the canonical `ss-copy` bridge app.
+`ss-copy` is installed standalone into `~/.local/bin` so tmux does not depend on a remote dotfiles checkout.
 
 ## Troubleshooting
 
@@ -93,4 +94,5 @@ ss-bridge bridge status
 ss-code . --vvv
 printf hello | ss-copy --vvv
 ss-health <ssh-config-host>
+ss-setup <ssh-config-host>
 ```

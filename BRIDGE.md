@@ -9,6 +9,7 @@ remote ss-code .      -> local code --remote ssh-remote+<ssh-host> <path>
 remote ss-open file  -> local rsync to /tmp/remote_<host>/... then open locally
 remote ss-copy       -> local pbcopy / wl-copy / xclip / xsel
 remote ss-health     -> verify remote clients, state, and bridge ping
+local ss-setup wk    -> install/update remote clients, create tunnel, verify health
 remote future-app -> local future handler
 ```
 
@@ -76,7 +77,7 @@ OpenSSH connects normally, then runs `LocalCommand` on the local Mac. The bridge
 ```text
 1. Start ~/.cache/ssh-bridge/bridge.sock daemon if needed.
 2. SSH into the same host without LocalCommand recursion.
-3. Install/update remote clients: ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy, ss-health.
+3. Install/update remote clients: ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy, ss-health, ss-setup.
 4. Write /tmp/ssh-bridge/$USER/$HOSTNAME/tcp.
 5. Write /tmp/ssh-bridge/$USER/$HOSTNAME/ssh_host.
 6. Check whether the reverse tunnel already works.
@@ -156,6 +157,7 @@ Application commands:
 ss-bridge code [path] [--vvv]
 ss-bridge copy [--vvv] < stdin
 ss-bridge health [ssh-config-host]
+ss-bridge setup <ssh-config-host>
 ```
 
 Client commands:
@@ -165,6 +167,7 @@ ss-code [path]
 ss-copy < stdin
 ss-pbcopy < stdin
 ss-health [ssh-config-host]
+ss-setup <ssh-config-host>
 ss-bridge bridge status
 ss-bridge local-command jump ducle
 ```
@@ -250,6 +253,13 @@ Local command: ss-health [ssh-config-host]
 Local action: verify local dependencies, daemon, optional remote install/state, and bridge ping
 ```
 
+`setup.run`:
+
+```text
+Local command: ss-setup <ssh-config-host>
+Local action: run ss-bridge local-command <host>, then ss-health <host>
+```
+
 ## Troubleshooting
 
 If a remote command says the bridge is missing, fix the local SSH config first. `curl | sh` only installs the remote client commands. It cannot configure your local Mac SSH `LocalCommand`.
@@ -272,6 +282,7 @@ Debug remote request:
 ss-code . --vvv
 printf hello | ss-copy --vvv
 ss-health <ssh-config-host>
+ss-setup <ssh-config-host>
 ```
 
 Check local daemon:

@@ -245,7 +245,7 @@ If a remote command says the bridge is missing, fix the local SSH config first. 
 Install or refresh remote clients manually:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/main/install-vsc.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/refs/heads/main/install-vsc.sh | sh
 ```
 
 Then reconnect from the local Mac:

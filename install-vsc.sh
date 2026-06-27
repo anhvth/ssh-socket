@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-repo_raw="${SSH_BRIDGE_REPO_RAW:-https://raw.githubusercontent.com/anhvth/ssh-socket/main}"
+repo_raw="${SSH_BRIDGE_REPO_RAW:-https://raw.githubusercontent.com/anhvth/ssh-socket/refs/heads/main}"
 install_dir="${SSH_BRIDGE_INSTALL_DIR:-${VSCODE_SSH_INSTALL_DIR:-${HOME}/.local/bin}}"
 tmp="${TMPDIR:-/tmp}/ssh-bridge.$$"
 

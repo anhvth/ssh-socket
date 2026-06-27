@@ -447,7 +447,7 @@ Host ${reconnect_target}
 Then reconnect from your Mac with: ssh ${reconnect_target}
 
 Note: curl | sh only installs remote client commands; it does not configure your Mac SSH bridge.
-Remote install command: curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/main/install-vsc.sh | sh
+Remote install command: curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/refs/heads/main/install-vsc.sh | sh
 
 Debug: ssh_config_host=${reconnect_target} remote_machine_hostname=${REMOTE_MACHINE_HOSTNAME} state_dir=${REMOTE_STATE_DIR} socket=${REMOTE_SOCKET} tcp=${REMOTE_TCP:-<unset>}
 EOF_HELP

@@ -27,7 +27,7 @@ BRIDGE.md
 On a remote machine, install the small client commands with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/main/install-vsc.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/refs/heads/main/install-vsc.sh | sh
 ```
 
 This installs:

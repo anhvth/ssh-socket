@@ -8,6 +8,7 @@ Examples:
 remote ss-code .      -> local code --remote ssh-remote+<ssh-host> <path>
 remote ss-open file  -> local rsync to /tmp/remote_<host>/... then open locally
 remote ss-copy       -> local pbcopy / wl-copy / xclip / xsel
+remote ss-health     -> verify remote clients, state, and bridge ping
 remote future-app -> local future handler
 ```
 
@@ -75,7 +76,7 @@ OpenSSH connects normally, then runs `LocalCommand` on the local Mac. The bridge
 ```text
 1. Start ~/.cache/ssh-bridge/bridge.sock daemon if needed.
 2. SSH into the same host without LocalCommand recursion.
-3. Install/update remote clients: ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy.
+3. Install/update remote clients: ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy, ss-health.
 4. Write /tmp/ssh-bridge/$USER/$HOSTNAME/tcp.
 5. Write /tmp/ssh-bridge/$USER/$HOSTNAME/ssh_host.
 6. Check whether the reverse tunnel already works.
@@ -89,6 +90,7 @@ After that, the normal remote shell can run:
 ss-code .
 ss-open /tmp/easy_to_read.html
 printf hello | ss-copy
+ss-health
 ```
 
 ## Request protocol
@@ -153,14 +155,16 @@ Application commands:
 ```bash
 ss-bridge code [path] [--vvv]
 ss-bridge copy [--vvv] < stdin
+ss-bridge health [ssh-config-host]
 ```
 
-Compatibility wrappers:
+Client commands:
 
 ```bash
 ss-code [path]
 ss-copy < stdin
 ss-pbcopy < stdin
+ss-health [ssh-config-host]
 ss-bridge bridge status
 ss-bridge local-command jump ducle
 ```
@@ -238,6 +242,14 @@ Local action: pbcopy, wl-copy, xclip, or xsel
 Fallback: local remote clipboard tools or OSC 52 if the bridge is missing
 ```
 
+`health.check`:
+
+```text
+Remote command: ss-health [--remote]
+Local command: ss-health [ssh-config-host]
+Local action: verify local dependencies, daemon, optional remote install/state, and bridge ping
+```
+
 ## Troubleshooting
 
 If a remote command says the bridge is missing, fix the local SSH config first. `curl | sh` only installs the remote client commands. It cannot configure your local Mac SSH `LocalCommand`.
@@ -259,6 +271,7 @@ Debug remote request:
 ```bash
 ss-code . --vvv
 printf hello | ss-copy --vvv
+ss-health <ssh-config-host>
 ```
 
 Check local daemon:

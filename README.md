@@ -8,6 +8,7 @@ It currently powers:
 ss-code .             -> opens local VS Code Remote-SSH at the remote path
 ss-copy < stdin      -> writes remote tmux/copy output to the local clipboard
 ss-pbcopy < stdin    -> alias for ss-copy
+ss-health [host]     -> verifies local and optional remote bridge health
 ```
 
 The shared primitive is:
@@ -39,6 +40,7 @@ This installs:
 ~/.local/bin/ss-open-remote
 ~/.local/bin/ss-copy
 ~/.local/bin/ss-pbcopy
+~/.local/bin/ss-health
 ```
 
 The remote machine does not need VS Code. It needs `python3` for bridge requests.
@@ -67,6 +69,7 @@ After reconnecting, these should work in the remote shell:
 ```bash
 ss-code .
 printf hello | ss-copy
+ss-health
 ```
 
 ## Tmux integration
@@ -77,7 +80,7 @@ Use `copy` as the tmux copy-pipe target:
 bind -T copy-mode-vi y send -X copy-pipe-and-cancel "$HOME/dotfiles/utils/copy"
 ```
 
-In this dotfiles repo, `utils/copy` is a wrapper around the canonical bridge copy app.
+In this dotfiles repo, `utils/copy` delegates to the canonical `ss-copy` bridge app.
 
 ## Troubleshooting
 
@@ -89,4 +92,5 @@ Useful checks:
 ss-bridge bridge status
 ss-code . --vvv
 printf hello | ss-copy --vvv
+ss-health <ssh-config-host>
 ```

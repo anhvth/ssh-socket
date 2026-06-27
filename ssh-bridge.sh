@@ -8,7 +8,6 @@ LOCAL_PID="${LOCAL_BASE_DIR}/bridge.pid"
 LOCAL_LOG="${LOCAL_BASE_DIR}/bridge.log"
 REMOTE_PORT="${SSH_BRIDGE_REMOTE_PORT:-47371}"
 REMOTE_STATE_ROOT="${SSH_BRIDGE_REMOTE_STATE_ROOT:-/tmp/ssh-bridge}"
-LEGACY_STATE_ROOT="/tmp/vscode-ssh"
 
 usage() {
     cat <<'USAGE'
@@ -19,6 +18,7 @@ Usage:
   ss-bridge code [path] [--vvv]
   ss-bridge open [path] [--vvv]
   ss-bridge copy [--vvv]
+  ss-bridge health [ssh-config-host]
 
 Clients:
   ss-code [path] [--vvv]
@@ -26,6 +26,7 @@ Clients:
   ss-open-remote [path] [--vvv]
   ss-copy < stdin
   ss-pbcopy < stdin
+  ss-health [ssh-config-host]
 
 Remote runtime state lives in /tmp/ssh-bridge/$USER/$HOSTNAME.
 Local runtime state lives in ~/.cache/ssh-bridge.
@@ -37,8 +38,8 @@ case "$prog" in
     ss-code) cmd="code" ;;
     ss-open|ss-open-remote) cmd="open" ;;
     ss-copy|ss-pbcopy) cmd="copy" ;;
+    ss-health) cmd="health" ;;
     ss-bridge) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
-    vscode-ssh.sh) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
     *) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
 esac
 
@@ -71,12 +72,6 @@ remote_state_dir() {
     local host
     host="$(remote_hostname)"
     printf '%s\n' "${SSH_BRIDGE_REMOTE_STATE_DIR:-${REMOTE_STATE_ROOT}/${USER:-user}/${host}}"
-}
-
-legacy_state_dir() {
-    local host
-    host="$(remote_hostname)"
-    printf '%s\n' "${VSC_REMOTE_STATE_DIR:-${LEGACY_STATE_ROOT}/${USER:-user}/${host}}"
 }
 
 read_first_existing() {
@@ -418,15 +413,14 @@ bridge_cmd() {
 
 load_remote_context() {
     REMOTE_STATE_DIR="$(remote_state_dir)"
-    REMOTE_LEGACY_STATE_DIR="$(legacy_state_dir)"
     REMOTE_SOCKET="${SSH_BRIDGE_SOCKET_REMOTE:-/tmp/ssh-bridge-${USER:-user}.sock}"
-    [[ -z "${SSH_BRIDGE_SOCKET_REMOTE:-}" ]] && REMOTE_SOCKET="$(read_first_existing "$REMOTE_STATE_DIR/socket" "$REMOTE_LEGACY_STATE_DIR/socket" || true)"
+    [[ -z "${SSH_BRIDGE_SOCKET_REMOTE:-}" ]] && REMOTE_SOCKET="$(read_first_existing "$REMOTE_STATE_DIR/socket" || true)"
     [[ -n "${REMOTE_SOCKET:-}" ]] || REMOTE_SOCKET="/tmp/ssh-bridge-${USER:-user}.sock"
     REMOTE_TCP="${SSH_BRIDGE_TCP_REMOTE:-}"
-    [[ -z "$REMOTE_TCP" ]] && REMOTE_TCP="$(read_first_existing "$REMOTE_STATE_DIR/tcp" "$REMOTE_LEGACY_STATE_DIR/tcp" || true)"
+    [[ -z "$REMOTE_TCP" ]] && REMOTE_TCP="$(read_first_existing "$REMOTE_STATE_DIR/tcp" || true)"
     REMOTE_MACHINE_HOSTNAME="$(remote_hostname)"
-    REMOTE_SSH_HOST="${_SSH_BRIDGE_HOST:-${_SSH_TO_ME:-${VSC_REMOTE_HOST:-}}}"
-    [[ -z "$REMOTE_SSH_HOST" ]] && REMOTE_SSH_HOST="$(read_first_existing "$REMOTE_STATE_DIR/ssh_host" "$REMOTE_STATE_DIR/ssh_to_me" "$REMOTE_LEGACY_STATE_DIR/ssh_to_me" || true)"
+    REMOTE_SSH_HOST="${_SSH_BRIDGE_HOST:-${_SSH_TO_ME:-}}"
+    [[ -z "$REMOTE_SSH_HOST" ]] && REMOTE_SSH_HOST="$(read_first_existing "$REMOTE_STATE_DIR/ssh_host" "$REMOTE_STATE_DIR/ssh_to_me" || true)"
     return 0
 }
 
@@ -717,6 +711,161 @@ PY
     send_json "$payload" "$request_type" 1 >/dev/null
 }
 
+health_ok() {
+    printf 'OK   %s\n' "$*"
+}
+
+health_warn() {
+    printf 'WARN %s\n' "$*"
+}
+
+health_fail() {
+    printf 'FAIL %s\n' "$*"
+    HEALTH_FAILS=$((HEALTH_FAILS + 1))
+}
+
+health_have_cmd() {
+    local name="$1"
+    if command -v "$name" >/dev/null 2>&1; then
+        health_ok "$name: $(command -v "$name")"
+    else
+        health_fail "$name: not found"
+    fi
+}
+
+health_have_file() {
+    local path="$1"
+    if [[ -x "$path" ]]; then
+        health_ok "$path executable"
+    else
+        health_fail "$path missing or not executable"
+    fi
+}
+
+health_old_absent() {
+    local path="$1"
+    if [[ -e "$path" ]]; then
+        health_fail "legacy still present: $path"
+    else
+        health_ok "legacy absent: $path"
+    fi
+}
+
+health_remote_cmd() {
+    HEALTH_FAILS=0
+    local install_dir="${HOME}/.local/bin" state_dir tcp ssh_host response
+    printf 'ss-health remote host=%s user=%s\n' "$(remote_hostname)" "${USER:-unknown}"
+    health_have_cmd python3
+    for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
+        health_have_file "$install_dir/$name"
+    done
+    for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-local-command; do
+        health_old_absent "$install_dir/$old_name"
+    done
+    state_dir="$(remote_state_dir)"
+    if [[ -d "$state_dir" ]]; then health_ok "state dir: $state_dir"; else health_fail "state dir missing: $state_dir"; fi
+    tcp="$(read_first_existing "$state_dir/tcp" || true)"
+    ssh_host="$(read_first_existing "$state_dir/ssh_host" "$state_dir/ssh_to_me" || true)"
+    if [[ -n "$tcp" ]]; then health_ok "tcp target: $tcp"; else health_fail "tcp target missing"; fi
+    if [[ -n "$ssh_host" ]]; then health_ok "ssh host: $ssh_host"; else health_fail "ssh host missing"; fi
+    if response="$(send_json '{"type":"ping"}' "health.ping" 0 2>/tmp/ss-health-ping.err)"; then
+        health_ok "bridge ping: $response"
+    else
+        health_fail "bridge ping failed: $(cat /tmp/ss-health-ping.err 2>/dev/null || true)"
+    fi
+    if (( HEALTH_FAILS == 0 )); then
+        printf 'GREEN ss-health remote passed\n'
+        return 0
+    fi
+    printf 'RED ss-health remote failed (%d issue(s))\n' "$HEALTH_FAILS"
+    return 1
+}
+
+health_local_cmd() {
+    local host="${1:-}" code_cmd opener clipboard_writer dotfiles_bin="$HOME/dotfiles/mybins"
+    HEALTH_FAILS=0
+    printf 'ss-health local host=%s user=%s\n' "$(hostname 2>/dev/null || printf unknown)" "${USER:-unknown}"
+    health_have_cmd python3
+    health_have_cmd ssh
+    health_have_cmd rsync
+    if code_cmd="$(choose_code_cmd 2>/dev/null)"; then health_ok "code command: $code_cmd"; else health_fail "code command not found"; fi
+    if [[ -x /usr/bin/open ]]; then
+        opener="/usr/bin/open"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        opener="$(command -v xdg-open)"
+    else
+        opener=""
+    fi
+    if [[ -n "$opener" ]]; then health_ok "opener: $opener"; else health_fail "opener not found"; fi
+    if command -v pbcopy >/dev/null 2>&1; then
+        clipboard_writer="$(command -v pbcopy)"
+    elif [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1; then
+        clipboard_writer="$(command -v wl-copy)"
+    elif command -v xclip >/dev/null 2>&1; then
+        clipboard_writer="$(command -v xclip)"
+    elif command -v xsel >/dev/null 2>&1; then
+        clipboard_writer="$(command -v xsel)"
+    else
+        clipboard_writer=""
+    fi
+    if [[ -n "$clipboard_writer" ]]; then health_ok "clipboard writer: $clipboard_writer"; else health_fail "clipboard writer not found"; fi
+    for name in ss-bridge ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
+        if [[ -d "$dotfiles_bin" ]]; then
+            health_have_file "$dotfiles_bin/$name"
+        else
+            health_have_cmd "$name"
+        fi
+    done
+    if bridge_cmd start --quiet >/dev/null 2>&1 && bridge_cmd status >/dev/null 2>&1; then
+        health_ok "local daemon: running at $LOCAL_SOCKET"
+    else
+        health_fail "local daemon failed; see $LOCAL_LOG"
+    fi
+    if [[ -n "$host" ]]; then
+        printf 'ss-health checking remote %s\n' "$host"
+        local_command_cmd "$host" || true
+        if ssh \
+            -o PermitLocalCommand=no \
+            -o LocalCommand=true \
+            -o ClearAllForwardings=yes \
+            -o ControlMaster=no \
+            -o ControlPath=none \
+            -o BatchMode=yes \
+            "$host" \
+            '$HOME/.local/bin/ss-health --remote'; then
+            health_ok "remote health: $host"
+        else
+            health_fail "remote health failed: $host"
+        fi
+    fi
+    if (( HEALTH_FAILS == 0 )); then
+        printf 'GREEN ss-health passed\n'
+        return 0
+    fi
+    printf 'RED ss-health failed (%d issue(s))\n' "$HEALTH_FAILS"
+    return 1
+}
+
+health_cmd() {
+    case "${1:-}" in
+        -h|--help)
+            echo 'Usage: ss-health [ssh-config-host]'
+            echo '       ss-health --remote'
+            return 0
+            ;;
+        --remote)
+            health_remote_cmd
+            ;;
+        *)
+            if is_remote_shell && [[ $# -eq 0 ]]; then
+                health_remote_cmd
+            else
+                health_local_cmd "${1:-}"
+            fi
+            ;;
+    esac
+}
+
 install_remote_script() {
     local ssh_target="$1" ssh_host="$2"
     {
@@ -727,13 +876,10 @@ remote_tcp_port="$2"
 install_dir="$HOME/.local/bin"
 remote_host="$(hostname 2>/dev/null || printf unknown)"
 state_root="/tmp/ssh-bridge/${USER:-user}/${remote_host}"
-legacy_state_root="/tmp/vscode-ssh/${USER:-user}/${remote_host}"
-mkdir -p "$install_dir" "$state_root" "$legacy_state_root"
+mkdir -p "$install_dir" "$state_root"
 printf "127.0.0.1:%s\n" "$remote_tcp_port" > "$state_root/tcp"
-printf "127.0.0.1:%s\n" "$remote_tcp_port" > "$legacy_state_root/tcp"
 printf '%s\n' "$ssh_host" > "$state_root/ssh_host"
 printf '%s\n' "$ssh_host" > "$state_root/ssh_to_me"
-printf '%s\n' "$ssh_host" > "$legacy_state_root/ssh_to_me"
 tmp="${TMPDIR:-/tmp}/ssh-bridge.$$"
 base64 -d > "$tmp" <<'SSH_BRIDGE_CLIENT_B64'
 REMOTE_SETUP_PREFIX
@@ -745,7 +891,7 @@ for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-l
     rm -f "$install_dir/$old_name"
 done
 cp "$tmp" "$install_dir/ss-bridge"
-for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy; do
+for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
     cp "$tmp" "$install_dir/$name"
     chmod +x "$install_dir/$name"
 done
@@ -836,6 +982,7 @@ case "$cmd" in
     code) code_cmd "$@" ;;
     open) open_cmd "$@" ;;
     copy) copy_cmd "$@" ;;
+    health) health_cmd "$@" ;;
     help|-h|--help) usage ;;
     *) echo "ssh-bridge: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
 esac

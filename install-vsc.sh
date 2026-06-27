@@ -24,14 +24,14 @@ for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-l
 done
 cp "$tmp" "${install_dir}/ss-bridge"
 chmod +x "${install_dir}/ss-bridge"
-for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy; do
+for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy ss-health; do
     cp "$tmp" "${install_dir}/${name}"
     chmod +x "${install_dir}/${name}"
 done
 trap - EXIT INT TERM
 rm -f "$tmp"
 
-echo "install-vsc: installed ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy into ${install_dir}"
+echo "install-vsc: installed ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy, ss-health into ${install_dir}"
 if ! command -v python3 >/dev/null 2>&1; then
     echo "install-vsc: warning: python3 is required when running remote bridge clients" >&2
 fi

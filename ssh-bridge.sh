@@ -13,17 +13,19 @@ LEGACY_STATE_ROOT="/tmp/vscode-ssh"
 usage() {
     cat <<'USAGE'
 Usage:
-  ssh-bridge bridge {start|serve|stop|status} [--quiet]
-  ssh-bridge local-command <ssh-config-host> [ssh-user]
-  ssh-bridge send <request-type> [json-fields]
-  ssh-bridge vsc [path] [--vvv]
-  ssh-bridge copy [--vvv]
+  ss-bridge bridge {start|serve|stop|status} [--quiet]
+  ss-bridge local-command <ssh-config-host> [ssh-user]
+  ss-bridge send <request-type> [json-fields]
+  ss-bridge code [path] [--vvv]
+  ss-bridge open [path] [--vvv]
+  ss-bridge copy [--vvv]
 
-Compatibility:
-  vsc [path] [--vvv]
-  copy < stdin
-  vsc-bridge {start|serve|stop|status}
-  vsc-ssh-local-command <ssh-config-host> [ssh-user]
+Clients:
+  ss-code [path] [--vvv]
+  ss-open [path] [--vvv]
+  ss-open-remote [path] [--vvv]
+  ss-copy < stdin
+  ss-pbcopy < stdin
 
 Remote runtime state lives in /tmp/ssh-bridge/$USER/$HOSTNAME.
 Local runtime state lives in ~/.cache/ssh-bridge.
@@ -32,11 +34,10 @@ USAGE
 
 prog="$(basename "$0")"
 case "$prog" in
-    vsc) cmd="vsc" ;;
-    copy|pbcopy) cmd="copy" ;;
-    ssh-bridge) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
-    vsc-bridge) cmd="bridge" ;;
-    vsc-ssh-local-command) cmd="local-command" ;;
+    ss-code) cmd="code" ;;
+    ss-open|ss-open-remote) cmd="open" ;;
+    ss-copy|ss-pbcopy) cmd="copy" ;;
+    ss-bridge) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
     vscode-ssh.sh) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
     *) cmd="${1:-help}"; [[ $# -gt 0 ]] && shift ;;
 esac
@@ -138,6 +139,17 @@ def choose_clipboard_writer():
         return [which("xsel"), "--clipboard", "--input"]
     return None
 
+def choose_opener():
+    if sys.platform == "darwin" and Path("/usr/bin/open").exists():
+        return ["/usr/bin/open"]
+    opener = which("xdg-open")
+    if opener:
+        return [opener]
+    opener = which("open")
+    if opener:
+        return [opener]
+    return None
+
 def parse_ssh_config_aliases(config_path):
     aliases = {}
     current_hosts = []
@@ -192,6 +204,51 @@ def handle_vscode_open(payload):
         "command": " ".join(shlex.quote(part) for part in cmd),
     }
 
+def sanitize_cache_name(value):
+    value = value.strip() or "unknown"
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
+
+def local_remote_copy_path(ssh_host, remote_path):
+    remote = Path(remote_path)
+    if not remote.is_absolute():
+        raise ValueError("file.open path must be absolute")
+    root = Path("/tmp") / f"remote_{sanitize_cache_name(ssh_host)}"
+    return root / str(remote).lstrip("/")
+
+def handle_file_open(payload):
+    path = (payload.get("path") or "").strip()
+    ssh_host = resolve_ssh_host(payload)
+    if not path:
+        return {"status": "error", "message": "file.open request did not include a path"}
+    if not ssh_host:
+        return {"status": "error", "message": "file.open request did not include an SSH config host"}
+    try:
+        local_path = local_remote_copy_path(ssh_host, path)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    rsync = which("rsync")
+    if not rsync:
+        return {"status": "error", "message": "local machine does not have rsync in PATH"}
+    rsync_cmd = [rsync, "-a", "--progress", f"{ssh_host}:{path}", str(local_path)]
+    proc = subprocess.run(rsync_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        return {"status": "error", "message": proc.stderr.decode("utf-8", "replace").strip() or "rsync failed"}
+    opener = choose_opener()
+    if not opener:
+        return {"status": "error", "message": f"downloaded to {local_path}, but local machine has no opener (open/xdg-open)"}
+    open_cmd = opener + [str(local_path)]
+    subprocess.Popen(open_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return {
+        "status": "ok",
+        "type": "file.open",
+        "ssh_host": ssh_host,
+        "path": path,
+        "local_path": str(local_path),
+        "rsync_command": " ".join(shlex.quote(part) for part in rsync_cmd),
+        "command": " ".join(shlex.quote(part) for part in open_cmd),
+    }
+
 def handle_clipboard_write(payload):
     text = payload.get("text")
     if text is None:
@@ -207,6 +264,7 @@ def handle_clipboard_write(payload):
 HANDLERS = {
     "ping": handle_ping,
     "vscode.open": handle_vscode_open,
+    "file.open": handle_file_open,
     "clipboard.write": handle_clipboard_write,
 }
 
@@ -369,6 +427,7 @@ load_remote_context() {
     REMOTE_MACHINE_HOSTNAME="$(remote_hostname)"
     REMOTE_SSH_HOST="${_SSH_BRIDGE_HOST:-${_SSH_TO_ME:-${VSC_REMOTE_HOST:-}}}"
     [[ -z "$REMOTE_SSH_HOST" ]] && REMOTE_SSH_HOST="$(read_first_existing "$REMOTE_STATE_DIR/ssh_host" "$REMOTE_STATE_DIR/ssh_to_me" "$REMOTE_LEGACY_STATE_DIR/ssh_to_me" || true)"
+    return 0
 }
 
 print_remote_bridge_help() {
@@ -383,12 +442,12 @@ Solution: on your LOCAL Mac, add these lines to the matching Host block in ~/.ss
 
 Host ${reconnect_target}
     PermitLocalCommand yes
-    LocalCommand /Users/anhvth/dotfiles/3rd/ssh_tmux_copy/ssh-bridge.sh local-command %n %r
+    LocalCommand /Users/anhvth/dotfiles/mybins/ss-bridge local-command %n %r
     SetEnv _SSH_BRIDGE_HOST=%n
 Then reconnect from your Mac with: ssh ${reconnect_target}
 
 Note: curl | sh only installs remote client commands; it does not configure your Mac SSH bridge.
-Remote install command: curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install-vsc.sh | sh
+Remote install command: curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/main/install-vsc.sh | sh
 
 Debug: ssh_config_host=${reconnect_target} remote_machine_hostname=${REMOTE_MACHINE_HOSTNAME} state_dir=${REMOTE_STATE_DIR} socket=${REMOTE_SOCKET} tcp=${REMOTE_TCP:-<unset>}
 EOF_HELP
@@ -465,14 +524,14 @@ json_escape_stdin() {
     python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }
 
-vsc_cmd() {
+code_cmd() {
     local debug=0 target_raw="" arg
     for arg in "$@"; do
         case "$arg" in
             -h|--help) usage; return 0 ;;
             --vvv) debug=1 ;;
             *)
-                if [[ -z "$target_raw" ]]; then target_raw="$arg"; else echo "vsc: unexpected argument: $arg" >&2; return 2; fi
+                if [[ -z "$target_raw" ]]; then target_raw="$arg"; else echo "ss-code: unexpected argument: $arg" >&2; return 2; fi
                 ;;
         esac
     done
@@ -481,8 +540,8 @@ vsc_cmd() {
     target="$(resolve_path "$target_raw")"
     if ! is_remote_shell; then
         local code_cmd
-        code_cmd="$(choose_code_cmd)" || { echo "vsc: neither 'code' nor 'code-insiders' is available." >&2; return 127; }
-        (( debug )) && printf 'vsc debug: local path=%s code=%s\n' "$target" "$code_cmd" >&2
+        code_cmd="$(choose_code_cmd)" || { echo "ss-code: neither 'code' nor 'code-insiders' is available." >&2; return 127; }
+        (( debug )) && printf 'ss-code debug: local path=%s code=%s\n' "$target" "$code_cmd" >&2
         exec "$code_cmd" "$target"
     fi
     load_remote_context
@@ -505,7 +564,65 @@ print(json.dumps({
 PY
     )"
     response="$(send_json "$payload" "vscode.open" "$debug")" || return 1
-    (( debug )) && printf 'vsc debug: bridge response=%s\n' "$response" >&2
+    (( debug )) && printf 'ss-code debug: bridge response=%s\n' "$response" >&2
+}
+
+open_cmd() {
+    local debug=0 target_raw="" arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help) echo 'Usage: ss-open [path] [--vvv]'; return 0 ;;
+            --vvv) debug=1 ;;
+            *)
+                if [[ -z "$target_raw" ]]; then target_raw="$arg"; else echo "ss-open: unexpected argument: $arg" >&2; return 2; fi
+                ;;
+        esac
+    done
+    target_raw="${target_raw:-.}"
+    local target
+    target="$(resolve_path "$target_raw")"
+
+    if ! is_remote_shell; then
+        if [[ -x /usr/bin/open ]]; then
+            exec /usr/bin/open "$target"
+        elif command -v xdg-open >/dev/null 2>&1; then
+            exec xdg-open "$target"
+        else
+            echo "ss-open: no opener found (open/xdg-open)." >&2
+            return 127
+        fi
+    fi
+
+    if [[ ! -e "$target" ]]; then
+        echo "ss-open: remote path not found: $target" >&2
+        return 1
+    fi
+    if [[ -d "$target" ]]; then
+        echo "ss-open: directories are not supported yet: $target" >&2
+        return 1
+    fi
+
+    load_remote_context
+    local payload response
+    payload="$(
+        SSH_BRIDGE_TYPE="file.open" \
+        SSH_BRIDGE_PATH="$target" \
+        SSH_BRIDGE_SSH_HOST="${REMOTE_SSH_HOST:-}" \
+        SSH_BRIDGE_REMOTE_HOST="$REMOTE_MACHINE_HOSTNAME" \
+        SSH_BRIDGE_USER="${USER:-}" \
+        python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "type": os.environ["SSH_BRIDGE_TYPE"],
+    "path": os.environ["SSH_BRIDGE_PATH"],
+    "ssh_host": os.environ.get("SSH_BRIDGE_SSH_HOST") or "",
+    "remote_machine_hostname": os.environ.get("SSH_BRIDGE_REMOTE_HOST") or "",
+    "user": os.environ.get("SSH_BRIDGE_USER") or "",
+}))
+PY
+    )"
+    response="$(send_json "$payload" "file.open" "$debug")" || return 1
+    (( debug )) && printf 'ss-open debug: bridge response=%s\n' "$response" >&2
 }
 
 copy_local_fallback() {
@@ -539,9 +656,9 @@ copy_cmd() {
     local debug=0 arg
     for arg in "$@"; do
         case "$arg" in
-            -h|--help) echo 'Usage: copy [--vvv] < stdin'; return 0 ;;
+            -h|--help) echo 'Usage: ss-copy [--vvv] < stdin'; return 0 ;;
             --vvv) debug=1 ;;
-            *) echo "copy: unexpected argument: $arg" >&2; return 2 ;;
+            *) echo "ss-copy: unexpected argument: $arg" >&2; return 2 ;;
         esac
     done
     local tmp select_file response payload text_json
@@ -574,13 +691,13 @@ PY
             (( debug )) && printf 'copy debug: bridge response=%s\n' "$response" >&2
             return 0
         fi
-        (( debug )) && echo 'copy debug: bridge failed; trying local/OSC52 fallback' >&2
+        (( debug )) && echo 'ss-copy debug: bridge failed; trying local/OSC52 fallback' >&2
     fi
 
     if copy_local_fallback "$tmp"; then
         return 0
     fi
-    printf 'copy: no clipboard target reachable; selection saved to %s\n' "$select_file" >&2
+    printf 'ss-copy: no clipboard target reachable; selection saved to %s\n' "$select_file" >&2
     return 0
 }
 
@@ -608,7 +725,6 @@ set -eu
 ssh_host="$1"
 remote_tcp_port="$2"
 install_dir="$HOME/.local/bin"
-dotfiles_bin="$HOME/dotfiles/mybins"
 remote_host="$(hostname 2>/dev/null || printf unknown)"
 state_root="/tmp/ssh-bridge/${USER:-user}/${remote_host}"
 legacy_state_root="/tmp/vscode-ssh/${USER:-user}/${remote_host}"
@@ -625,19 +741,16 @@ REMOTE_SETUP_PREFIX
         cat <<'REMOTE_SETUP_SUFFIX'
 SSH_BRIDGE_CLIENT_B64
 chmod +x "$tmp"
-cp "$tmp" "$install_dir/ssh-bridge"
-for name in vsc copy pbcopy; do
+for old_name in ssh-bridge vsc open open-remote copy pbcopy vsc-bridge vsc-ssh-local-command; do
+    rm -f "$install_dir/$old_name"
+done
+cp "$tmp" "$install_dir/ss-bridge"
+for name in ss-code ss-open ss-open-remote ss-copy ss-pbcopy; do
     cp "$tmp" "$install_dir/$name"
     chmod +x "$install_dir/$name"
 done
+chmod +x "$install_dir/ss-bridge"
 rm -f "$tmp"
-if [ -d "$HOME/dotfiles" ]; then
-    mkdir -p "$dotfiles_bin"
-    for name in ssh-bridge vsc copy pbcopy; do
-        cp "$install_dir/$name" "$dotfiles_bin/$name"
-        chmod +x "$dotfiles_bin/$name"
-    done
-fi
 if ! command -v python3 >/dev/null 2>&1; then
     echo "ssh-bridge: installed clients, but python3 is required for remote requests" >&2
 fi
@@ -720,8 +833,9 @@ case "$cmd" in
     bridge) bridge_cmd "$@" ;;
     local-command) local_command_cmd "$@" ;;
     send) send_cmd "$@" ;;
-    vsc) vsc_cmd "$@" ;;
-    copy|pbcopy) copy_cmd "$@" ;;
+    code) code_cmd "$@" ;;
+    open) open_cmd "$@" ;;
+    copy) copy_cmd "$@" ;;
     help|-h|--help) usage ;;
     *) echo "ssh-bridge: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
 esac

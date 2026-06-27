@@ -5,8 +5,9 @@
 Examples:
 
 ```text
-remote vsc .      -> local code --remote ssh-remote+<ssh-host> <path>
-remote copy       -> local pbcopy / wl-copy / xclip / xsel
+remote ss-code .      -> local code --remote ssh-remote+<ssh-host> <path>
+remote ss-open file  -> local rsync to /tmp/remote_<host>/... then open locally
+remote ss-copy       -> local pbcopy / wl-copy / xclip / xsel
 remote future-app -> local future handler
 ```
 
@@ -51,11 +52,11 @@ Each host that should support bridge apps needs this in the local Mac `~/.ssh/co
 ```sshconfig
 Host jump
     PermitLocalCommand yes
-    LocalCommand /Users/anhvth/dotfiles/3rd/ssh_tmux_copy/ssh-bridge.sh local-command %n %r
+    LocalCommand /Users/anhvth/dotfiles/mybins/ss-bridge local-command %n %r
     SetEnv _SSH_BRIDGE_HOST=%n
 Host wk wk2 worker-*
     PermitLocalCommand yes
-    LocalCommand /Users/anhvth/dotfiles/3rd/ssh_tmux_copy/ssh-bridge.sh local-command %n %r
+    LocalCommand /Users/anhvth/dotfiles/mybins/ss-bridge local-command %n %r
     SetEnv _SSH_BRIDGE_HOST=%n
 ```
 
@@ -74,7 +75,7 @@ OpenSSH connects normally, then runs `LocalCommand` on the local Mac. The bridge
 ```text
 1. Start ~/.cache/ssh-bridge/bridge.sock daemon if needed.
 2. SSH into the same host without LocalCommand recursion.
-3. Install/update remote clients: ssh-bridge, vsc, copy, pbcopy.
+3. Install/update remote clients: ss-bridge, ss-code, ss-open, ss-open-remote, ss-copy, ss-pbcopy.
 4. Write /tmp/ssh-bridge/$USER/$HOSTNAME/tcp.
 5. Write /tmp/ssh-bridge/$USER/$HOSTNAME/ssh_host.
 6. Check whether the reverse tunnel already works.
@@ -85,8 +86,9 @@ OpenSSH connects normally, then runs `LocalCommand` on the local Mac. The bridge
 After that, the normal remote shell can run:
 
 ```bash
-vsc .
-printf hello | copy
+ss-code .
+ss-open /tmp/easy_to_read.html
+printf hello | ss-copy
 ```
 
 ## Request protocol
@@ -128,39 +130,39 @@ or:
 Local daemon lifecycle:
 
 ```bash
-ssh-bridge bridge start
-ssh-bridge bridge status
-ssh-bridge bridge stop
-ssh-bridge bridge serve
+ss-bridge bridge start
+ss-bridge bridge status
+ss-bridge bridge stop
+ss-bridge bridge serve
 ```
 
 SSH bootstrap command used by `LocalCommand`:
 
 ```bash
-ssh-bridge local-command <ssh-config-host> [ssh-user]
+ss-bridge local-command <ssh-config-host> [ssh-user]
 ```
 
 Generic remote request helper:
 
 ```bash
-ssh-bridge send <request-type> '{"field":"value"}'
+ss-bridge send <request-type> '{"field":"value"}'
 ```
 
 Application commands:
 
 ```bash
-ssh-bridge vsc [path] [--vvv]
-ssh-bridge copy [--vvv] < stdin
+ss-bridge code [path] [--vvv]
+ss-bridge copy [--vvv] < stdin
 ```
 
 Compatibility wrappers:
 
 ```bash
-vsc [path]
-copy < stdin
-pbcopy < stdin
-vsc-bridge status
-vsc-ssh-local-command jump ducle
+ss-code [path]
+ss-copy < stdin
+ss-pbcopy < stdin
+ss-bridge bridge status
+ss-bridge local-command jump ducle
 ```
 
 ## How to add a future application
@@ -215,15 +217,23 @@ Implementation checklist:
 `vscode.open`:
 
 ```text
-Remote command: vsc [path]
+Remote command: ss-code [path]
 Local action: code --remote ssh-remote+<ssh_host> <path>
 Required local dependency: /usr/local/bin/code, code, or code-insiders
+```
+
+`file.open`:
+
+```text
+Remote command: ss-open [path] or ss-open-remote [path]
+Local action: rsync <ssh_host>:<path> /tmp/remote_<ssh_host>/<path> then open/xdg-open
+Required local dependency: rsync and open/xdg-open
 ```
 
 `clipboard.write`:
 
 ```text
-Remote command: copy < stdin, pbcopy < stdin
+Remote command: ss-copy < stdin, ss-pbcopy < stdin
 Local action: pbcopy, wl-copy, xclip, or xsel
 Fallback: local remote clipboard tools or OSC 52 if the bridge is missing
 ```
@@ -235,7 +245,7 @@ If a remote command says the bridge is missing, fix the local SSH config first. 
 Install or refresh remote clients manually:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install-vsc.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/main/install-vsc.sh | sh
 ```
 
 Then reconnect from the local Mac:
@@ -247,12 +257,12 @@ ssh <ssh-config-host>
 Debug remote request:
 
 ```bash
-vsc . --vvv
-printf hello | copy --vvv
+ss-code . --vvv
+printf hello | ss-copy --vvv
 ```
 
 Check local daemon:
 
 ```bash
-ssh-bridge bridge status
+ss-bridge bridge status
 ```

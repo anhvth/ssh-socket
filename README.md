@@ -5,9 +5,9 @@ This repo provides a small canonical bridge for remote SSH commands that need to
 It currently powers:
 
 ```text
-vsc .             -> opens local VS Code Remote-SSH at the remote path
-copy < stdin      -> writes remote tmux/copy output to the local clipboard
-pbcopy < stdin    -> alias for copy
+ss-code .             -> opens local VS Code Remote-SSH at the remote path
+ss-copy < stdin      -> writes remote tmux/copy output to the local clipboard
+ss-pbcopy < stdin    -> alias for ss-copy
 ```
 
 The shared primitive is:
@@ -27,16 +27,18 @@ BRIDGE.md
 On a remote machine, install the small client commands with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install-vsc.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-socket/main/install-vsc.sh | sh
 ```
 
 This installs:
 
 ```text
-~/.local/bin/ssh-bridge
-~/.local/bin/vsc
-~/.local/bin/copy
-~/.local/bin/pbcopy
+~/.local/bin/ss-bridge
+~/.local/bin/ss-code
+~/.local/bin/ss-open
+~/.local/bin/ss-open-remote
+~/.local/bin/ss-copy
+~/.local/bin/ss-pbcopy
 ```
 
 The remote machine does not need VS Code. It needs `python3` for bridge requests.
@@ -50,7 +52,7 @@ Add this to each local `~/.ssh/config` Host block that should support bridge app
 ```sshconfig
 Host jump
     PermitLocalCommand yes
-    LocalCommand /Users/anhvth/dotfiles/3rd/ssh_tmux_copy/ssh-bridge.sh local-command %n %r
+    LocalCommand /Users/anhvth/dotfiles/mybins/ss-bridge local-command %n %r
     SetEnv _SSH_BRIDGE_HOST=%n
 ```
 
@@ -63,8 +65,8 @@ ssh jump
 After reconnecting, these should work in the remote shell:
 
 ```bash
-vsc .
-printf hello | copy
+ss-code .
+printf hello | ss-copy
 ```
 
 ## Tmux integration
@@ -84,7 +86,7 @@ If the remote command says the bridge is missing, fix local SSH config first. `c
 Useful checks:
 
 ```bash
-ssh-bridge bridge status
-vsc . --vvv
-printf hello | copy --vvv
+ss-bridge bridge status
+ss-code . --vvv
+printf hello | ss-copy --vvv
 ```

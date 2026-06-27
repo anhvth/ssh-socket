@@ -284,11 +284,12 @@ bridge_cmd() {
 
 print_remote_bridge_help() {
     local alias_hint="${1:-}" host="${2:-unknown}" state_dir="${3:-}" socket="${4:-}" bridge_tcp="${5:-}"
-    local reconnect_target="${alias_hint:-<the-name-you-run-with-ssh>}"
+    local reconnect_target="${alias_hint:-<ssh-config-host>}"
 
     cat >&2 <<EOF
-Problem: machine '${host}' is missing the local VS Code bridge for this SSH session.
+Problem: SSH host '${reconnect_target}' is missing the local VS Code bridge for this SSH session.
 Cause: remote 'vsc' is installed, but your Mac did not create the SSH bridge/tunnel when you connected.
+Note: use the Host name from your LOCAL ~/.ssh/config, not the remote machine hostname '${host}'.
 
 Solution: on your LOCAL Mac, add these lines to the matching Host block in ~/.ssh/config:
 
@@ -302,7 +303,7 @@ Then reconnect from your Mac with: ssh ${reconnect_target}
 Note: curl | sh only installs remote 'vsc'; it does not configure your Mac SSH bridge.
 Remote install command: curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install-vsc.sh | sh
 
-Debug: remote_host=${host} state_dir=${state_dir} socket=${socket} tcp=${bridge_tcp:-<unset>}
+Debug: ssh_config_host=${reconnect_target} remote_machine_hostname=${host} state_dir=${state_dir} socket=${socket} tcp=${bridge_tcp:-<unset>}
 EOF
 }
 

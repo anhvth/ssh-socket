@@ -282,6 +282,26 @@ bridge_cmd() {
     bridge_python "$action" "$@"
 }
 
+print_remote_bridge_help() {
+    local alias_hint="${1:-}" host="${2:-unknown}" state_dir="${3:-}" socket="${4:-}" bridge_tcp="${5:-}"
+    local reconnect_target="${alias_hint:-<the-name-you-run-with-ssh>}"
+
+    cat >&2 <<EOF
+vsc: remote vsc is installed, but this SSH session has no bridge back to your Mac.
+vsc: fix this on your LOCAL Mac by adding these lines to the matching Host block in ~/.ssh/config:
+
+Host ${reconnect_target}
+    PermitLocalCommand yes
+    LocalCommand /Users/anhvth/dotfiles/3rd/ssh_tmux_copy/vscode-ssh.sh local-command %n %r
+    SetEnv _SSH_TO_ME=%n
+
+vsc: if the Host block already exists, add only the three indented lines above.
+vsc: then reconnect from your Mac with: ssh ${reconnect_target}
+vsc: install command is only for the remote helper: curl -fsSL https://raw.githubusercontent.com/anhvth/ssh-tmux-copy/main/install-vsc.sh | sh
+vsc: debug: remote_host=${host} state_dir=${state_dir} socket=${socket} tcp=${bridge_tcp:-<unset>}
+EOF
+}
+
 vsc_cmd() {
     local debug=0 target_raw="" arg
     for arg in "$@"; do
@@ -333,7 +353,7 @@ vsc_cmd() {
     }
 
     if [[ -z "$bridge_tcp" && ! -S "$socket" ]]; then
-        echo "vsc: local VS Code bridge is not connected. Reconnect with: ssh ${ssh_to_me:-$host}" >&2
+        print_remote_bridge_help "$ssh_to_me" "$host" "$state_dir" "$socket" "$bridge_tcp"
         return 1
     fi
 
@@ -392,6 +412,9 @@ PY
     if [[ "$status" != "ok" ]]; then
         message="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message","bridge request failed"))' 2>/dev/null || printf 'bridge request failed')"
         echo "vsc: $message" >&2
+        if [[ "$message" == *"bridge socket"* || "$message" == *"accepting connections"* || "$message" == *"Connection refused"* ]]; then
+            print_remote_bridge_help "$ssh_to_me" "$host" "$state_dir" "$socket" "$bridge_tcp"
+        fi
         return 1
     fi
 }
